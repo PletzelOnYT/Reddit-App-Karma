@@ -194,13 +194,25 @@ async function currentViewer(): Promise<{ username: string; rank: number | null;
   if (!username) return null;
 
   let stats = await getUserStats(username);
-  if (!stats) {
-    await refreshCommunityKarma(username);
-    stats = await getUserStats(username);
+  let ascendingRank = await redis.zRank(LEADERBOARD_KEY, username);
+
+  // Include a viewer with existing subreddit karma even if they were outside
+  // the initial backfill window, but do not add zero-activity readers to the board.
+  if (!stats && (ascendingRank === null || ascendingRank === undefined)) {
+    try {
+      const ownKarma = await reddit.getUserKarmaFromCurrentSubreddit(username) as CommunityKarma;
+      const totalKarma = Number(ownKarma?.fromPosts ?? 0) + Number(ownKarma?.fromComments ?? 0);
+      if (Number.isFinite(totalKarma) && totalKarma !== 0) {
+        await refreshCommunityKarma(username);
+        stats = await getUserStats(username);
+        ascendingRank = await redis.zRank(LEADERBOARD_KEY, username);
+      }
+    } catch {
+      // If Reddit cannot return the viewer's own community karma, keep the footer unranked.
+    }
   }
 
   const count = await redis.zCard(LEADERBOARD_KEY);
-  const ascendingRank = await redis.zRank(LEADERBOARD_KEY, username);
   const rank = ascendingRank === null || ascendingRank === undefined ? null : count - ascendingRank;
 
   return {
