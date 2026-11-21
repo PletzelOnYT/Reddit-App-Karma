@@ -23,7 +23,7 @@ The app also records how many posts and comments each member has contributed. Th
 
 When a moderator chooses **Create / Refresh Karma Leaderboard**, the app queues up to the newest 1,000 subreddit posts for an initial history scan. A scheduled worker processes those posts in batches and scans up to 1,000 comments per post. This follows Reddit's listing limits; it is not a complete archive scan of every item ever posted if the subreddit has more than 1,000 posts or a thread has more than 1,000 comments.
 
-After the initial scan, Reddit post/comment creation triggers add new contributors automatically. A scheduled refresh periodically re-queries known members' current subreddit karma so vote-score changes are reflected. The app de-duplicates content IDs to avoid counting trigger retries twice.
+After the initial scan, Reddit post/comment creation triggers add new contributors automatically. A scheduled refresh periodically re-queries known members' current subreddit karma so vote-score changes are reflected. The app de-duplicates content IDs atomically to avoid counting trigger retries twice. Post/comment activity totals count detected creations (including items later deleted); the karma total itself is Reddit's current subreddit-specific karma.
 
 ## Moderator requirement
 
