@@ -78,7 +78,7 @@ function App() {
   return (
     <main className="app">
       <header className="header">
-        <h1>Total Karma</h1>
+        <h1>Subreddit Karma</h1>
       </header>
 
       <div className="description">
@@ -113,12 +113,6 @@ function App() {
             ))}
           </section>
 
-          {data.scan.state !== 'complete' && (
-            <p className="scan-status">
-              Scanning posts and comments · {number(data.scan.scanned)} / {number(data.scan.total)}
-            </p>
-          )}
-
           <nav className="pagination" aria-label="Leaderboard pages">
             <button
               className="page-button"
@@ -143,8 +137,17 @@ function App() {
         </>
       ) : (
         <div className="notice">
-          No subreddit activity has been indexed yet. A moderator can start the first scan from the subreddit menu.
+          {data?.scan.state === 'scanning'
+            ? 'The historical scan is running. Earlier posts and comments will appear as batches are processed.'
+            : 'No subreddit activity has been indexed yet. A moderator can start the historical scan from the subreddit menu.'}
         </div>
+      )}
+
+      {data?.scan.state === 'scanning' && (
+        <p className="scan-status">
+          Scanning earlier posts · {number(data.scan.scanned)} / {number(data.scan.total)}
+          {(data.scan.failed ?? 0) > 0 ? ' · ' + number(data.scan.failed ?? 0) + ' unavailable' : ''}
+        </p>
       )}
 
       <footer className="you-bar">
