@@ -6,6 +6,7 @@ import {
   getPageWindow,
   rankFromAscendingIndex,
   recordUniqueActivity,
+  getHistoricalPostIds,
 } from '../shared/leaderboard.ts';
 
 const app = new Hono();
@@ -15,6 +16,8 @@ const USERS_KEY = 'karma:users:v1';
 const POST_QUEUE_KEY = 'karma:backfill:posts:v1';
 const POST_CURSOR_KEY = 'karma:backfill:cursor:v1';
 const SCAN_STATUS_KEY = 'karma:scan:status:v1';
+const SCAN_RUN_KEY = 'karma:scan:run-id:v1';
+const SCAN_ATTEMPTS_PREFIX = 'karma:scan:attempts:v1:';
 const LEADERBOARD_POST_KEY = 'karma:leaderboard:post-id:v1';
 const ACTIVITY_COUNTS_KEY_PREFIX = 'karma:activity-counts:v1:';
 const BATCH_POSTS = 6;
@@ -34,6 +37,16 @@ type ScanStatus = {
   state: 'idle' | 'scanning' | 'complete';
   scanned: number;
   total: number;
+  failed?: number;
+};
+
+type BackfillBatchResult = {
+  done: boolean;
+  scanned: number;
+  total: number;
+  processed: number;
+  failed: number;
+  retryingPost?: string;
 };
 
 type PostId = `t3_${string}`;
@@ -186,6 +199,133 @@ async function readScanStatus(): Promise<ScanStatus> {
   }
 }
 
+async function refreshKnownUsersBatch(): Promise<number> {
+  const total = await redis.zCard(USERS_KEY);
+  if (total === 0) return 0;
+
+  const cursorRaw = Number(await redis.get('karma:refresh:cursor:v1') ?? '0');
+  const start = Number.isFinite(cursorRaw) && cursorRaw >= 0 && cursorRaw < total ? cursorRaw : 0;
+  const stop = Math.min(start + BATCH_USERS - 1, total - 1);
+  const users = await redis.zRange(USERS_KEY, start, stop, { by: 'rank' });
+
+  for (let i = 0; i < users.length; i += 5) {
+    const group = users.slice(i, i + 5);
+    await Promise.all(group.map((user) => refreshCommunityKarma(user.member)));
+  }
+
+  const nextCursor = start + users.length >= total ? 0 : start + users.length;
+  await redis.set('karma:refresh:cursor:v1', String(nextCursor));
+  return users.length;
+}
+
+async function processBackfillBatch(): Promise<BackfillBatchResult> {
+  const queueRaw = await redis.get(POST_QUEUE_KEY);
+  const priorStatus = await readScanStatus();
+
+  if (!queueRaw) {
+    return {
+      done: priorStatus.state !== 'scanning',
+      scanned: priorStatus.scanned,
+      total: priorStatus.total,
+      processed: 0,
+      failed: priorStatus.failed ?? 0,
+    };
+  }
+
+  const postIds = JSON.parse(queueRaw) as string[];
+  const cursorValue = Number(await redis.get(POST_CURSOR_KEY) ?? '0');
+  let cursor = Number.isInteger(cursorValue) && cursorValue >= 0 ? cursorValue : 0;
+  let processed = 0;
+  let failed = priorStatus.failed ?? 0;
+  const runId = await redis.get(SCAN_RUN_KEY) ?? 'legacy';
+  const attemptsKey = SCAN_ATTEMPTS_PREFIX + runId;
+  const end = Math.min(cursor + BATCH_POSTS, postIds.length);
+
+  for (let index = cursor; index < end; index += 1) {
+    const postId = postIds[index];
+    try {
+      // This historical lookup is independent of app-install time. It loads
+      // older posts from Reddit's existing subreddit listing, then their comments.
+      const post = await reddit.getPostById(asPostId(postId));
+      await recordActivity('post', post.id, post.authorName);
+
+      const comments = await reddit.getComments({
+        postId: asPostId(postId),
+        limit: 1000,
+        pageSize: 100,
+      }).all();
+
+      for (const comment of comments) {
+        await recordActivity('comment', comment.id, comment.authorName);
+      }
+
+      cursor = index + 1;
+      processed += 1;
+      await redis.set(POST_CURSOR_KEY, String(cursor));
+      await redis.set(SCAN_STATUS_KEY, JSON.stringify({
+        state: 'scanning',
+        scanned: cursor,
+        total: postIds.length,
+        failed,
+      } satisfies ScanStatus));
+    } catch (error) {
+      const attempts = await redis.hIncrBy(attemptsKey, postId, 1);
+      console.error('Historical scan could not process post ' + postId + ' (attempt ' + attempts + ' of 3):', error);
+
+      // Leave the cursor on this post so the next scheduled or manual batch retries it.
+      // Activity IDs are de-duplicated, so retrying a partially read thread is safe.
+      if (attempts < 3) {
+        await redis.set(SCAN_STATUS_KEY, JSON.stringify({
+          state: 'scanning',
+          scanned: cursor,
+          total: postIds.length,
+          failed,
+        } satisfies ScanStatus));
+        return {
+          done: false,
+          scanned: cursor,
+          total: postIds.length,
+          processed,
+          failed,
+          retryingPost: postId,
+        };
+      }
+
+      // After three attempts, move past a permanently unavailable/deleted post
+      // so one broken item cannot block the whole subreddit history scan.
+      failed += 1;
+      cursor = index + 1;
+      await redis.set(POST_CURSOR_KEY, String(cursor));
+      await redis.set(SCAN_STATUS_KEY, JSON.stringify({
+        state: 'scanning',
+        scanned: cursor,
+        total: postIds.length,
+        failed,
+      } satisfies ScanStatus));
+    }
+  }
+
+  if (processed > 0) {
+    // During playtests a moderator can advance the scan manually; refresh a
+    // bounded slice of discovered users here as well as via the recurring task.
+    await refreshKnownUsersBatch();
+  }
+
+  const done = cursor >= postIds.length;
+  await redis.set(SCAN_STATUS_KEY, JSON.stringify({
+    state: done ? 'complete' : 'scanning',
+    scanned: cursor,
+    total: postIds.length,
+    failed,
+  } satisfies ScanStatus));
+
+  if (done) {
+    await redis.del(POST_QUEUE_KEY);
+  }
+
+  return { done, scanned: cursor, total: postIds.length, processed, failed };
+}
+
 async function currentViewer(): Promise<{ username: string; rank: number | null; karma: number } | null> {
   let username = '';
   try {
@@ -300,7 +440,11 @@ app.post('/internal/menu/create-leaderboard', async (c) => {
       await redis.set(LEADERBOARD_POST_KEY, post.id);
     }
 
-    await post.sticky(1);
+    // Sticky slots are shared by the whole subreddit. Never take slot 1 from
+    // another community post; remove only this app's pin if an older version set it.
+    if (post.stickied) {
+      await post.unsticky();
+    }
 
     const posts = await reddit.getNewPosts({
       subredditName,
@@ -308,26 +452,77 @@ app.post('/internal/menu/create-leaderboard', async (c) => {
       pageSize: 100,
     }).all();
 
-    const postIds = posts.map((item) => item.id);
+    const postIds = getHistoricalPostIds(posts, post.id);
+    const runId = Date.now().toString();
+    await redis.set(SCAN_RUN_KEY, runId);
     await redis.set(POST_QUEUE_KEY, JSON.stringify(postIds));
     await redis.set(POST_CURSOR_KEY, '0');
     await redis.set(SCAN_STATUS_KEY, JSON.stringify({
       state: postIds.length > 0 ? 'scanning' : 'complete',
       scanned: 0,
       total: postIds.length,
+      failed: 0,
     } satisfies ScanStatus));
+
+    // Process the first page immediately so the initial historical scan does
+    // not depend on waiting for a cron tick in a playtest.
+    const firstBatch = await processBackfillBatch();
+    const message = firstBatch.done
+      ? 'Leaderboard ready. Historical scan checked ' + firstBatch.scanned + ' older posts; ' + firstBatch.failed + ' could not be read.'
+      : 'Historical scan started: ' + firstBatch.scanned + ' of ' + firstBatch.total + ' posts checked. Use Continue Historical Scan to process another batch; automatic refresh also continues in production.';
 
     return c.json({
       showToast: {
-        text: 'Leaderboard pinned. Scanning ' + postIds.length + ' recent posts and their comments in the background.',
+        text: message,
         appearance: 'success',
       },
     });
   } catch (error) {
-    console.error('Could not create the karma leaderboard:', error);
+    console.error('Could not create or scan the karma leaderboard:', error);
     return c.json({
       showToast: {
-        text: 'Could not create the leaderboard. Confirm the app has moderator access and check the logs.',
+        text: 'Could not start the historical scan. Confirm moderator access and check the playtest logs.',
+        appearance: 'neutral',
+      },
+    });
+  }
+});
+
+app.post('/internal/menu/continue-scan', async (c) => {
+  try {
+    const subreddit = await reddit.getCurrentSubreddit();
+    await assertSubredditModerator(subreddit.name);
+
+    const status = await readScanStatus();
+    if (status.state !== 'scanning') {
+      return c.json({
+        showToast: {
+          text: status.state === 'complete'
+            ? 'The historical scan is already complete.'
+            : 'No historical scan is queued. Choose Create / Refresh Karma Leaderboard first.',
+          appearance: 'neutral',
+        },
+      });
+    }
+
+    const progress = await processBackfillBatch();
+    const text = progress.retryingPost
+      ? 'Could not read post ' + progress.retryingPost + '. It will be retried automatically; progress is ' + progress.scanned + ' of ' + progress.total + '.'
+      : progress.done
+        ? 'Historical scan complete: ' + progress.scanned + ' posts checked; ' + progress.failed + ' unavailable posts skipped.'
+        : 'Historical scan progress: ' + progress.scanned + ' of ' + progress.total + ' posts checked. Run Continue Historical Scan again for the next batch.';
+
+    return c.json({
+      showToast: {
+        text,
+        appearance: progress.retryingPost ? 'neutral' : 'success',
+      },
+    });
+  } catch (error) {
+    console.error('Could not continue the historical scan:', error);
+    return c.json({
+      showToast: {
+        text: 'Could not continue the scan. Confirm moderator access and check the playtest logs.',
         appearance: 'neutral',
       },
     });
@@ -336,43 +531,8 @@ app.post('/internal/menu/create-leaderboard', async (c) => {
 
 app.post('/internal/scheduler/backfill', async (c) => {
   try {
-    const queueRaw = await redis.get(POST_QUEUE_KEY);
-    if (!queueRaw) return c.json({ status: 'ok', done: true });
-
-    const postIds = JSON.parse(queueRaw) as string[];
-    const cursor = Number(await redis.get(POST_CURSOR_KEY) ?? '0');
-    const batch = postIds.slice(cursor, cursor + BATCH_POSTS);
-
-    for (const postId of batch) {
-      try {
-        const post = await reddit.getPostById(asPostId(postId));
-        await recordActivity('post', post.id, post.authorName);
-
-        const comments = await reddit.getComments({
-          postId: asPostId(postId),
-          limit: 1000,
-          pageSize: 100,
-        }).all();
-
-        for (const comment of comments) {
-          await recordActivity('comment', comment.id, comment.authorName);
-        }
-      } catch (error) {
-        console.error('Could not backfill post ' + postId + ':', error);
-      }
-    }
-
-    const nextCursor = cursor + batch.length;
-    const done = nextCursor >= postIds.length;
-    await redis.set(POST_CURSOR_KEY, String(nextCursor));
-    await redis.set(SCAN_STATUS_KEY, JSON.stringify({
-      state: done ? 'complete' : 'scanning',
-      scanned: nextCursor,
-      total: postIds.length,
-    } satisfies ScanStatus));
-
-    if (done) await redis.del(POST_QUEUE_KEY);
-    return c.json({ status: 'ok', done, scanned: nextCursor, total: postIds.length });
+    const result = await processBackfillBatch();
+    return c.json({ status: 'ok', ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown backfill error';
     console.error('Karma leaderboard backfill failed:', message);
@@ -382,22 +542,9 @@ app.post('/internal/scheduler/backfill', async (c) => {
 
 app.post('/internal/scheduler/refresh-karma', async (c) => {
   try {
-    const total = await redis.zCard(USERS_KEY);
-    if (total === 0) return c.json({ status: 'ok', refreshed: 0 });
-
-    const cursorRaw = Number(await redis.get('karma:refresh:cursor:v1') ?? '0');
-    const start = cursorRaw >= total ? 0 : cursorRaw;
-    const stop = Math.min(start + BATCH_USERS - 1, total - 1);
-    const users = await redis.zRange(USERS_KEY, start, stop, { by: 'rank' });
-
-    for (let i = 0; i < users.length; i += 5) {
-      const group = users.slice(i, i + 5);
-      await Promise.all(group.map((user) => refreshCommunityKarma(user.member)));
-    }
-
-    const nextCursor = start + users.length >= total ? 0 : start + users.length;
-    await redis.set('karma:refresh:cursor:v1', String(nextCursor));
-    return c.json({ status: 'ok', refreshed: users.length, knownUsers: total });
+    const refreshed = await refreshKnownUsersBatch();
+    const knownUsers = await redis.zCard(USERS_KEY);
+    return c.json({ status: 'ok', refreshed, knownUsers });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown karma refresh error';
     console.error('Karma leaderboard refresh failed:', message);
