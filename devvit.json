@@ -41,10 +41,17 @@
     "items": [
       {
         "label": "Create / Refresh Karma Leaderboard",
-        "description": "Create and pin the subreddit community-karma leaderboard, then scan recent posts and comments",
+        "description": "Create the leaderboard and scan up to 1,000 recent posts created before the app was installed.",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/create-leaderboard"
+      },
+      {
+        "label": "Continue Historical Scan",
+        "description": "Manually process the next batch of older subreddit posts and comments.",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/continue-scan"
       }
     ]
   },
