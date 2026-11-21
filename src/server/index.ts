@@ -165,26 +165,20 @@ async function recordActivity(kind: 'post' | 'comment', itemId: string, username
   const username = await ensureCandidate(usernameValue);
   if (!username || !itemId) return;
 
-  const prior = await getUserStats(username);
   const countKey = activityCountsKey(username);
-  await redis.hSetNX(countKey, 'posts', String(prior?.posts ?? 0));
-  await redis.hSetNX(countKey, 'comments', String(prior?.comments ?? 0));
+  // Initialize the counters once, then only increment the relevant Redis hash.
+  // getUserStats() reads these hashes when it renders the leaderboard, so saving
+  // the whole profile for every historical comment is unnecessary and expensive.
+  await Promise.all([
+    redis.hSetNX(countKey, 'posts', '0'),
+    redis.hSetNX(countKey, 'comments', '0'),
+  ]);
 
   await recordUniqueActivity(
     () => redis.zAdd(seenKey(kind), { member: itemId, score: 1 }),
     async () => {
       const field = kind === 'post' ? 'posts' : 'comments';
       await redis.hIncrBy(countKey, field, 1);
-      const [posts, comments] = await redis.hMGet(countKey, ['posts', 'comments']);
-      await saveUserStats({
-        username,
-        postKarma: prior?.postKarma ?? 0,
-        commentKarma: prior?.commentKarma ?? 0,
-        totalKarma: prior?.totalKarma ?? 0,
-        posts: Number(posts),
-        comments: Number(comments),
-        lastUpdated: prior?.lastUpdated ?? '',
-      });
     },
   );
 }
@@ -255,8 +249,13 @@ async function processBackfillBatch(): Promise<BackfillBatchResult> {
         pageSize: 100,
       }).all();
 
-      for (const comment of comments) {
-        await recordActivity('comment', comment.id, comment.authorName);
+      // Keep Redis writes concurrent but bounded so large historical threads
+      // do not exceed the server request time limit.
+      for (let offset = 0; offset < comments.length; offset += 25) {
+        const chunk = comments.slice(offset, offset + 25);
+        await Promise.all(chunk.map((comment) =>
+          recordActivity('comment', comment.id, comment.authorName),
+        ));
       }
 
       cursor = index + 1;
@@ -281,6 +280,9 @@ async function processBackfillBatch(): Promise<BackfillBatchResult> {
           total: postIds.length,
           failed,
         } satisfies ScanStatus));
+        if (processed > 0) {
+          await refreshKnownUsersBatch();
+        }
         return {
           done: false,
           scanned: cursor,
