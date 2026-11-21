@@ -78,9 +78,6 @@ function App() {
     return () => window.clearInterval(timer);
   }, [page, load]);
 
-  const firstRank = data && data.rows.length ? data.rows[0].rank : page * 10 + 1;
-  const lastRank = data ? page * 10 + data.rows.length : 0;
-
   return (
     <main className="app">
       <header className="header">
@@ -115,7 +112,7 @@ function App() {
           </section>
           <nav className="pagination" aria-label="Leaderboard pages">
             <button className="page-button" onClick={() => void load(page - 1)} disabled={page <= 0 || loading}>← Previous</button>
-            <span className="page-count">{page + 1} / {Math.max(1,data.pageCount)}</span>
+            <span className="page-count">{page + 1} / {Math.max(1, data.pageCount)}</span>
             <button className="page-button" onClick={() => void load(page + 1)} disabled={page + 1 >= data.pageCount || loading}>Next →</button>
           </nav>
           {data.scan.state !== 'complete' && (

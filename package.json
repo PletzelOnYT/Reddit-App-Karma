@@ -10,21 +10,22 @@
   "scripts": {
     "build": "vite build",
     "deploy": "npm run build && devvit upload",
-    "dev": "devvit playtest",
+    "dev": "devvit playtest spice_shop_watch_dev",
     "launch": "npm run deploy && devvit publish",
-    "login": "devvit login",
+    "login": "devvit login --copy-paste",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@devvit/start": "0.15.4",
     "@devvit/web": "0.15.4",
     "@hono/node-server": "2.1.6",
-    "devvit": "0.15.4",
     "hono": "4.13.17",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "devvit": "0.15.4",
     "@tailwindcss/vite": "4.3.5",
     "@types/node": "^24.13.3",
     "@types/react": "19.3.0",

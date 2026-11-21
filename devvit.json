@@ -17,7 +17,7 @@
   "permissions": {
     "reddit": {
       "enable": true,
-      "scope": "moderator"
+      "scope": "user"
     },
     "redis": true
   },

@@ -27,25 +27,31 @@ After the initial scan, Reddit post/comment creation triggers add new contributo
 
 ## Moderator requirement
 
-The app requests moderator-scope Reddit access because Reddit only allows a subreddit moderator's app to retrieve other members' community-karma totals. Install it in a subreddit where the installing account is a moderator. The signed-in viewer's own footer is calculated from that same subreddit-specific endpoint.
+The app requests Reddit API and Redis access. Devvit's `moderator` Reddit scope is deprecated and treated as `user`; retrieving another member's community karma is authorized by Reddit only when the requesting account is a moderator of the current subreddit. Set up and playtest the app while signed in as a moderator of `spice_shop_watch_dev`. The viewer's own footer uses the same subreddit-specific karma endpoint. This does not grant access to overall Reddit karma or voter identities.
 
 ## Run from Codespaces
 
 1. Open https://github.com/PletzelOnYT/Reddit-App-Karma.
-2. Create a Codespace on the \`main\` branch.
+2. Create a Codespace on the `main` branch.
 3. In the terminal run:
 
-       npm install
-       npx devvit login
-       npx devvit init --force
+       npm ci
+       npm test
        npm run type-check
        npm run build
+       npm run login
        npm run dev
 
-4. Open the playtest URL printed by Devvit and refresh the test subreddit.
-5. In the subreddit moderator menu, choose **Create / Refresh Karma Leaderboard**.
+   The login command uses Devvit's copy-paste flow so the OAuth callback works
+   from a Codespace. When prompted, copy the authorization code from Reddit's
+   redirect page and paste it into the terminal. Do not share that code.
 
-If the CLI says the project is already initialized, don't delete the app configuration. Continue with the build and playtest commands.
+`npm run dev` runs `devvit playtest spice_shop_watch_dev` against the development
+subreddit, installs the app there, watches local changes, and streams logs. The
+playtest account must be logged in and a moderator of that test subreddit.
+Open the playtest URL, then use the subreddit moderator menu and choose
+**Create / Refresh Karma Leaderboard** to create and pin the post and start the
+historical scan.
 
 ## Production
 

@@ -1,6 +1,12 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { createServer, getServerPort, reddit, redis } from '@devvit/web/server';
+import {
+  communityKarma,
+  getPageWindow,
+  rankFromAscendingIndex,
+  recordUniqueActivity,
+} from '../shared/leaderboard.ts';
 
 const app = new Hono();
 
@@ -10,14 +16,9 @@ const POST_QUEUE_KEY = 'karma:backfill:posts:v1';
 const POST_CURSOR_KEY = 'karma:backfill:cursor:v1';
 const SCAN_STATUS_KEY = 'karma:scan:status:v1';
 const LEADERBOARD_POST_KEY = 'karma:leaderboard:post-id:v1';
+const ACTIVITY_COUNTS_KEY_PREFIX = 'karma:activity-counts:v1:';
 const BATCH_POSTS = 6;
 const BATCH_USERS = 40;
-const PAGE_SIZE = 10;
-
-type CommunityKarma = {
-  fromPosts?: number;
-  fromComments?: number;
-};
 
 type UserStats = {
   username: string;
@@ -82,14 +83,26 @@ function seenKey(kind: 'post' | 'comment'): string {
   return 'karma:seen:' + kind + ':v1';
 }
 
+function activityCountsKey(username: string): string {
+  return ACTIVITY_COUNTS_KEY_PREFIX + username.toLowerCase();
+}
+
 async function getUserStats(username: string): Promise<UserStats | null> {
   const raw = await redis.get(profileKey(username));
   if (!raw) return null;
+  let stats: UserStats;
   try {
-    return JSON.parse(raw) as UserStats;
+    stats = JSON.parse(raw) as UserStats;
   } catch {
     return null;
   }
+
+  const [posts, comments] = await redis.hMGet(activityCountsKey(username), ['posts', 'comments']);
+  return {
+    ...stats,
+    posts: posts === null ? stats.posts : Number(posts),
+    comments: comments === null ? stats.comments : Number(comments),
+  };
 }
 
 async function saveUserStats(stats: UserStats): Promise<void> {
@@ -108,17 +121,19 @@ async function refreshCommunityKarma(usernameValue: unknown): Promise<boolean> {
   if (!username) return false;
 
   try {
-    const result = await reddit.getUserKarmaFromCurrentSubreddit(username) as CommunityKarma;
+    const result = await reddit.getUserKarmaFromCurrentSubreddit(username);
     const prior = await getUserStats(username);
-    const postKarma = Number(result?.fromPosts ?? 0);
-    const commentKarma = Number(result?.fromComments ?? 0);
-    const totalKarma = postKarma + commentKarma;
+    const totalKarma = communityKarma(result?.fromPosts, result?.fromComments);
+    if (totalKarma === null) {
+      console.error('Reddit returned invalid subreddit karma for ' + username + '.');
+      return false;
+    }
 
     const stats: UserStats = {
       username,
-      postKarma: Number.isFinite(postKarma) ? postKarma : 0,
-      commentKarma: Number.isFinite(commentKarma) ? commentKarma : 0,
-      totalKarma: Number.isFinite(totalKarma) ? totalKarma : 0,
+      postKarma: result?.fromPosts ?? 0,
+      commentKarma: result?.fromComments ?? 0,
+      totalKarma,
       posts: prior?.posts ?? 0,
       comments: prior?.comments ?? 0,
       lastUpdated: new Date().toISOString(),
@@ -137,23 +152,28 @@ async function recordActivity(kind: 'post' | 'comment', itemId: string, username
   const username = await ensureCandidate(usernameValue);
   if (!username || !itemId) return;
 
-  const activityKey = kind + ':' + itemId;
-  // ZADD is atomic and returns 1 only when this content ID is new.
-  // This keeps duplicate trigger deliveries from counting the same activity twice.
-  const added = await redis.zAdd(seenKey(kind), { member: itemId, score: 1 });
-  if (added === 0) return;
-
   const prior = await getUserStats(username);
-  const stats: UserStats = {
-    username,
-    postKarma: prior?.postKarma ?? 0,
-    commentKarma: prior?.commentKarma ?? 0,
-    totalKarma: prior?.totalKarma ?? 0,
-    posts: (prior?.posts ?? 0) + (kind === 'post' ? 1 : 0),
-    comments: (prior?.comments ?? 0) + (kind === 'comment' ? 1 : 0),
-    lastUpdated: prior?.lastUpdated ?? '',
-  };
-  await saveUserStats(stats);
+  const countKey = activityCountsKey(username);
+  await redis.hSetNX(countKey, 'posts', String(prior?.posts ?? 0));
+  await redis.hSetNX(countKey, 'comments', String(prior?.comments ?? 0));
+
+  await recordUniqueActivity(
+    () => redis.zAdd(seenKey(kind), { member: itemId, score: 1 }),
+    async () => {
+      const field = kind === 'post' ? 'posts' : 'comments';
+      await redis.hIncrBy(countKey, field, 1);
+      const [posts, comments] = await redis.hMGet(countKey, ['posts', 'comments']);
+      await saveUserStats({
+        username,
+        postKarma: prior?.postKarma ?? 0,
+        commentKarma: prior?.commentKarma ?? 0,
+        totalKarma: prior?.totalKarma ?? 0,
+        posts: Number(posts),
+        comments: Number(comments),
+        lastUpdated: prior?.lastUpdated ?? '',
+      });
+    },
+  );
 }
 
 async function readScanStatus(): Promise<ScanStatus> {
@@ -182,9 +202,9 @@ async function currentViewer(): Promise<{ username: string; rank: number | null;
   // the initial backfill window, but do not add zero-activity readers to the board.
   if (!stats && (ascendingRank === null || ascendingRank === undefined)) {
     try {
-      const ownKarma = await reddit.getUserKarmaFromCurrentSubreddit(username) as CommunityKarma;
-      const totalKarma = Number(ownKarma?.fromPosts ?? 0) + Number(ownKarma?.fromComments ?? 0);
-      if (Number.isFinite(totalKarma) && totalKarma !== 0) {
+      const ownKarma = await reddit.getUserKarmaFromCurrentSubreddit(username);
+      const totalKarma = communityKarma(ownKarma?.fromPosts, ownKarma?.fromComments);
+      if (totalKarma !== null && totalKarma !== 0) {
         await refreshCommunityKarma(username);
         stats = await getUserStats(username);
         ascendingRank = await redis.zRank(LEADERBOARD_KEY, username);
@@ -195,7 +215,7 @@ async function currentViewer(): Promise<{ username: string; rank: number | null;
   }
 
   const count = await redis.zCard(LEADERBOARD_KEY);
-  const rank = ascendingRank === null || ascendingRank === undefined ? null : count - ascendingRank;
+  const rank = rankFromAscendingIndex(count, ascendingRank);
 
   return {
     username,
@@ -208,10 +228,7 @@ app.get('/api/leaderboard', async (c) => {
   try {
     const rawPage = Number.parseInt(c.req.query('page') ?? '0', 10);
     const totalUsers = await redis.zCard(LEADERBOARD_KEY);
-    const pageCount = Math.max(1, Math.ceil(totalUsers / PAGE_SIZE));
-    const page = Math.max(0, Math.min(Number.isFinite(rawPage) ? rawPage : 0, pageCount - 1));
-    const start = page * PAGE_SIZE;
-    const stop = Math.min(start + PAGE_SIZE - 1, totalUsers - 1);
+    const { page, pageCount, start, stop } = getPageWindow(totalUsers, rawPage);
 
     const members = totalUsers > 0
       ? await redis.zRange(LEADERBOARD_KEY, start, stop, { by: 'rank', reverse: true })
@@ -291,7 +308,7 @@ app.post('/internal/menu/create-leaderboard', async (c) => {
       pageSize: 100,
     }).all();
 
-    const postIds = posts.map((item) => item.id).filter((id): id is string => typeof id === 'string');
+    const postIds = posts.map((item) => item.id);
     await redis.set(POST_QUEUE_KEY, JSON.stringify(postIds));
     await redis.set(POST_CURSOR_KEY, '0');
     await redis.set(SCAN_STATUS_KEY, JSON.stringify({
