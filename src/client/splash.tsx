@@ -27,6 +27,7 @@ type LeaderboardResponse = {
     state: string;
     scanned: number;
     total: number;
+    failed?: number;
   };
   lastUpdated: string | null;
   error?: string;
