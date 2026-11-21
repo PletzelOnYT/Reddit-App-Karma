@@ -40,18 +40,22 @@ The app requests Reddit API and Redis access. Devvit's `moderator` Reddit scope 
        npm run type-check
        npm run build
        npm run login
-       npm run dev
 
    The login command uses Devvit's copy-paste flow so the OAuth callback works
    from a Codespace. When prompted, copy the authorization code from Reddit's
    redirect page and paste it into the terminal. Do not share that code.
 
-`npm run dev` runs `devvit playtest spice_shop_watch_dev` against the development
-subreddit, installs the app there, watches local changes, and streams logs. The
-playtest account must be logged in and a moderator of that test subreddit.
-Open the playtest URL, then use the subreddit moderator menu and choose
-**Create / Refresh Karma Leaderboard** to create and pin the post and start the
-historical scan.
+4. This project uses the existing `karma-board` app account. Do not run
+   `devvit init --force` in this existing project.
+5. Run `npm run deploy` to privately upload the development version, then
+   `npm run dev` to playtest on `spice_shop_watch_dev`.
+6. Open the playtest URL, then use the subreddit moderator menu and choose
+   **Create / Refresh Karma Leaderboard** to create and pin the post and start the
+   historical scan.
+
+The playtest account must be logged in and a moderator of `spice_shop_watch_dev`.
+`npm run dev` watches local changes and streams logs; it does not publish the app
+to production.
 
 ## Production
 
