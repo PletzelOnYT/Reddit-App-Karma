@@ -5,6 +5,7 @@ import {
   getPageWindow,
   rankFromAscendingIndex,
   recordUniqueActivity,
+  getHistoricalPostIds,
 } from '../src/shared/leaderboard.ts';
 
 test('community karma adds subreddit post and comment karma, including negative scores', () => {
@@ -45,4 +46,18 @@ test('duplicate activity deliveries only apply the activity once', async () => {
   ]);
 
   assert.equal(count, 1);
+});
+
+
+test('historical scan includes posts that predate app installation and skips its own leaderboard post', () => {
+  const posts = [
+    { id: 't3_old_post' },
+    { id: 't3_board_post' },
+    { id: 't3_recent_post' },
+    { id: 't3_old_post' },
+  ];
+  assert.deepEqual(
+    getHistoricalPostIds(posts, 't3_board_post'),
+    ['t3_old_post', 't3_recent_post'],
+  );
 });
