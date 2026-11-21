@@ -1,39 +1,49 @@
 # Karma Leaderboard — Reddit Devvit app
 
-A subreddit-specific leaderboard, hosted inside Reddit as a pinned interactive post.
+A simple subreddit-specific karma leaderboard, shown in an interactive Reddit post.
 
 ## How scoring works
 
-The app uses Reddit's own community-karma endpoint for each discovered member. It reads the member's karma **from this subreddit only**, combining:
-- Post karma in this subreddit
-- Comment karma in this subreddit
+The app uses Reddit's current-subreddit karma API. Each member's leaderboard score is their post karma plus comment karma **from this subreddit only**. It is not their overall Reddit karma.
 
-This is not global Reddit karma. Reddit does not reveal which individual accounts upvoted or downvoted a post or comment, so the app cannot award points for named voters or count each voter's votes. Reddit's aggregate community-karma totals already include the votes that Reddit counts.
+The app also counts the number of posts and comments created by each member. Those counts are displayed separately from their karma.
 
-The app also records how many posts and comments each member has contributed. Those counts are displayed alongside their karma.
+Reddit does not expose the identity of individual voters, so the app cannot award named users for each upvote or downvote.
 
-## Leaderboard interface
+## Leaderboard
 
-- Top 10 per page, with Previous / Next page controls.
-- Every page keeps the signed-in viewer's own rank and community karma in a footer.
-- Places have distinct materials: 1 Diamond, 2 Gold, 3 Silver, 4 Copper, 5 Stone.
-- The app creates and pins its leaderboard post from a subreddit moderator menu item.
+- Shows 10 members per page, ordered by subreddit karma.
+- Previous / Next controls navigate between pages.
+- The signed-in viewer's rank and subreddit karma stay in a footer at the bottom.
+- The first five ranks have subtle diamond, gold, silver, copper, and stone markers.
+- The interface follows the browser's light/dark color scheme and does not scroll the list internally.
+- The app creates its leaderboard post but does **not** automatically pin it. Reddit's sticky slots are shared with the community's existing pinned posts, so the app must not replace another community sticky.
 
-## Initial scan and ongoing updates
+## Historical scan
 
-When a moderator chooses **Create / Refresh Karma Leaderboard**, the app queues up to the newest 1,000 subreddit posts for an initial history scan. A scheduled worker processes those posts in batches and scans up to 1,000 comments per post. This follows Reddit's listing limits; it is not a complete archive scan of every item ever posted if the subreddit has more than 1,000 posts or a thread has more than 1,000 comments.
+A moderator chooses **Create / Refresh Karma Leaderboard** from the subreddit menu. The app:
+1. Creates or reuses the leaderboard post without taking a sticky slot.
+2. Requests Reddit's existing newest-post listing, including posts created before the app was installed.
+3. Excludes the leaderboard's own post from its history queue.
+4. Begins processing the first batch immediately.
+5. Records each post author and the authors of comments on that post.
+6. Refreshes a bounded batch of discovered members' current subreddit karma.
 
-After the initial scan, Reddit post/comment creation triggers add new contributors automatically. A scheduled refresh periodically re-queries known members' current subreddit karma so vote-score changes are reflected. The app de-duplicates content IDs atomically to avoid counting trigger retries twice. Post/comment activity totals count detected creations (including items later deleted); the karma total itself is Reddit's current subreddit-specific karma.
+The moderator can choose **Continue Historical Scan** to manually process the next batch. The recurring backfill task also advances the queue automatically where scheduled jobs are running. Failed posts are retried up to three times; a post that remains unavailable is skipped and recorded in the scan status so it cannot block the entire queue.
 
-## Moderator requirement
+**Reddit API history limits:** the app can request up to the 1,000 newest posts and up to 1,000 comments per post from the available listing endpoints. It cannot retrieve an unlimited all-time archive beyond the items Reddit makes available through those listings. Deleted, removed, or otherwise unavailable content may not be readable.
 
-The app requests Reddit API and Redis access. Devvit's `moderator` Reddit scope is deprecated and treated as `user`; retrieving another member's community karma is authorized by Reddit only when the requesting account is a moderator of the current subreddit. Set up and playtest the app while signed in as a moderator of `spice_shop_watch_dev`. The viewer's own footer uses the same subreddit-specific karma endpoint. This does not grant access to overall Reddit karma or voter identities.
+The app also uses post/comment creation triggers for new activity after installation. Activity IDs are de-duplicated so trigger retries do not count the same post or comment more than once. Activity counts represent detected creations, including content later deleted; karma is refreshed from Reddit's current subreddit-specific totals.
+
+## Permissions
+
+The account using the moderator menu must be a moderator of the subreddit. Reddit restricts reading another member's community-karma total to moderators. The viewer can still request their own subreddit karma through the same endpoint.
 
 ## Run from Codespaces
 
 1. Open https://github.com/PletzelOnYT/Reddit-App-Karma.
-2. Create a Codespace on the `main` branch.
-3. In the terminal run:
+2. Create or open a Codespace on `main`.
+3. Run:
 
        npm ci
        npm test
@@ -41,27 +51,24 @@ The app requests Reddit API and Redis access. Devvit's `moderator` Reddit scope 
        npm run build
        npm run login
 
-   The login command uses Devvit's copy-paste flow so the OAuth callback works
-   from a Codespace. When prompted, copy the authorization code from Reddit's
-   redirect page and paste it into the terminal. Do not share that code.
+4. Complete Devvit login in the browser if prompted. Never share the authorization code or credentials.
+5. Upload a private development version:
 
-4. This project uses the existing `karma-board` app account. Do not run
-   `devvit init --force` in this existing project.
-5. Run `npm run deploy` to privately upload the development version, then
-   `npm run dev` to playtest on `spice_shop_watch_dev`.
-6. Open the playtest URL, then use the subreddit moderator menu and choose
-   **Create / Refresh Karma Leaderboard** to create and pin the post and start the
-   historical scan.
+       npm run deploy
 
-The playtest account must be logged in and a moderator of `spice_shop_watch_dev`.
-`npm run dev` watches local changes and streams logs; it does not publish the app
-to production.
+6. Start a playtest:
+
+       npm run dev
+
+7. Open the playtest URL and refresh the subreddit. From the subreddit moderator menu, choose **Create / Refresh Karma Leaderboard**. To manually advance the historical scan during testing, choose **Continue Historical Scan** again as needed.
+
+Do not run `devvit init --force` in this existing project.
 
 ## Production
 
-After playtesting and verifying subreddit karma access:
+After testing, run:
 
        npm run deploy
        npx devvit publish
 
-Complete Reddit's app review and install the approved app in the production subreddit you moderate. The scheduler and triggers run on Reddit's infrastructure; Codespaces is only needed to develop and upload new versions.
+Complete Reddit's app review and install the approved app in the production subreddit you moderate. The scheduler and triggers run within the installed Reddit app; Codespaces is only needed for development and uploads.
