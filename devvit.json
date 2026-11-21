@@ -1,0 +1,55 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "karma-leaderboard",
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": {
+      "default": {
+        "entry": "splash.html",
+        "height": "tall"
+      }
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "permissions": {
+    "reddit": {
+      "enable": true,
+      "scope": "moderator"
+    },
+    "redis": true
+  },
+  "scheduler": {
+    "tasks": {
+      "backfill-community-activity": {
+        "endpoint": "/internal/scheduler/backfill",
+        "cron": "* * * * *"
+      },
+      "refresh-community-karma": {
+        "endpoint": "/internal/scheduler/refresh-karma",
+        "cron": "*/2 * * * *"
+      }
+    }
+  },
+  "triggers": {
+    "onPostCreate": "/internal/triggers/post-create",
+    "onCommentCreate": "/internal/triggers/comment-create"
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Create / Refresh Karma Leaderboard",
+        "description": "Create and pin the subreddit community-karma leaderboard, then scan recent posts and comments",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/create-leaderboard"
+      }
+    ]
+  },
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build"
+  }
+}
