@@ -10,8 +10,7 @@ const POST_QUEUE_KEY = 'karma:backfill:posts:v1';
 const POST_CURSOR_KEY = 'karma:backfill:cursor:v1';
 const SCAN_STATUS_KEY = 'karma:scan:status:v1';
 const LEADERBOARD_POST_KEY = 'karma:leaderboard:post-id:v1';
-const ACTIVITY_ITEMS_KEY = 'karma:activity:items:v1';
-const BATCH_POSTS = 12;
+const BATCH_POSTS = 6;
 const BATCH_USERS = 40;
 const PAGE_SIZE = 10;
 
@@ -52,22 +51,6 @@ function cleanUsername(value: unknown): string {
   const name = value.trim().replace(/^u\//i, '');
   if (!name || name === '[deleted]' || name === 'deleted' || name.toLowerCase() === 'automoderator') return '';
   return name;
-}
-
-function readAuthorUsername(itemValue: unknown, rootValue?: unknown): string {
-  const item = asRecord(itemValue);
-  const author = asRecord(item.author);
-  const root = asRecord(rootValue);
-  const eventAuthor = asRecord(root.author);
-  const user = asRecord(root.user);
-  return cleanUsername(item.authorName)
-    || cleanUsername(author.name)
-    || cleanUsername(author.username)
-    || cleanUsername(item.username)
-    || cleanUsername(eventAuthor.name)
-    || cleanUsername(eventAuthor.username)
-    || cleanUsername(user.name)
-    || cleanUsername(root.authorName);
 }
 
 function readItemId(itemValue: unknown): string {
@@ -159,7 +142,6 @@ async function recordActivity(kind: 'post' | 'comment', itemId: string, username
   // This keeps duplicate trigger deliveries from counting the same activity twice.
   const added = await redis.zAdd(seenKey(kind), { member: itemId, score: 1 });
   if (added === 0) return;
-  await redis.set(ACTIVITY_ITEMS_KEY + ':' + activityKey, username);
 
   const prior = await getUserStats(username);
   const stats: UserStats = {
