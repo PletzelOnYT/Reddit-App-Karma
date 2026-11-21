@@ -75,6 +75,22 @@ function readItemId(itemValue: unknown): string {
   return typeof item.id === 'string' ? item.id : '';
 }
 
+type CommentId = `t1_${string}`;
+
+function asCommentId(value: string): CommentId {
+  if (!value.startsWith('t1_')) throw new Error('Invalid Reddit comment ID.');
+  return value as CommentId;
+}
+
+async function assertSubredditModerator(subredditName: string): Promise<void> {
+  const currentUser = await reddit.getCurrentUser();
+  if (!currentUser) throw new Error('Sign in with a moderator account to set up the leaderboard.');
+  const permissions = await currentUser.getModPermissionsForSubreddit(subredditName);
+  if (!permissions || permissions.length === 0) {
+    throw new Error('The account setting up the leaderboard must be a moderator of this subreddit.');
+  }
+}
+
 function profileKey(username: string): string {
   return 'karma:user:' + username.toLowerCase();
 }
@@ -139,10 +155,10 @@ async function recordActivity(kind: 'post' | 'comment', itemId: string, username
   if (!username || !itemId) return;
 
   const activityKey = kind + ':' + itemId;
-  const alreadySeen = await redis.zScore(seenKey(kind), itemId);
-  if (alreadySeen !== null && alreadySeen !== undefined) return;
-
-  await redis.zAdd(seenKey(kind), { member: itemId, score: 1 });
+  // ZADD is atomic and returns 1 only when this content ID is new.
+  // This keeps duplicate trigger deliveries from counting the same activity twice.
+  const added = await redis.zAdd(seenKey(kind), { member: itemId, score: 1 });
+  if (added === 0) return;
   await redis.set(ACTIVITY_ITEMS_KEY + ':' + activityKey, username);
 
   const prior = await getUserStats(username);
@@ -256,6 +272,7 @@ app.post('/internal/menu/create-leaderboard', async (c) => {
   try {
     const subreddit = await reddit.getCurrentSubreddit();
     const subredditName = subreddit.name;
+    await assertSubredditModerator(subredditName);
 
     const existingId = await redis.get(LEADERBOARD_POST_KEY);
     let post = existingId ? await reddit.getPostById(asPostId(existingId)) : null;
@@ -380,10 +397,13 @@ app.post('/internal/scheduler/refresh-karma', async (c) => {
 app.post('/internal/triggers/post-create', async (c) => {
   try {
     const payload = await c.req.json() as Record<string, unknown>;
-    const post = asRecord(payload.post);
-    const username = readAuthorUsername(post, payload);
-    const id = readItemId(post);
-    await recordActivity('post', id, username);
+    const postSnapshot = asRecord(payload.post);
+    const id = readItemId(postSnapshot);
+    if (!id) return c.json({ status: 'ignored' });
+    // Re-fetch the post instead of trusting a public trigger payload's author field.
+    const post = await reddit.getPostById(asPostId(id));
+    const username = cleanUsername(post.authorName);
+    await recordActivity('post', post.id, username);
     if (username) await refreshCommunityKarma(username);
     return c.json({ status: 'ok' });
   } catch (error) {
@@ -395,10 +415,13 @@ app.post('/internal/triggers/post-create', async (c) => {
 app.post('/internal/triggers/comment-create', async (c) => {
   try {
     const payload = await c.req.json() as Record<string, unknown>;
-    const comment = asRecord(payload.comment);
-    const username = readAuthorUsername(comment, payload);
-    const id = readItemId(comment);
-    await recordActivity('comment', id, username);
+    const commentSnapshot = asRecord(payload.comment);
+    const id = readItemId(commentSnapshot);
+    if (!id) return c.json({ status: 'ignored' });
+    // Re-fetch the comment instead of trusting a public trigger payload's author field.
+    const comment = await reddit.getCommentById(asCommentId(id));
+    const username = cleanUsername(comment.authorName);
+    await recordActivity('comment', comment.id, username);
     if (username) await refreshCommunityKarma(username);
     return c.json({ status: 'ok' });
   } catch (error) {
