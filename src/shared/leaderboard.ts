@@ -49,3 +49,22 @@ export async function recordUniqueActivity(
   await onNewActivity();
   return true;
 }
+
+
+/**
+ * Build a historical scan queue from Reddit's newest-post listing.
+ * The leaderboard's own custom post is not community activity and must be skipped.
+ */
+export function getHistoricalPostIds(
+  posts: readonly { id: string }[],
+  leaderboardPostId: string,
+): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const post of posts) {
+    if (!post.id || post.id === leaderboardPostId || seen.has(post.id)) continue;
+    seen.add(post.id);
+    ids.push(post.id);
+  }
+  return ids;
+}
