@@ -98,6 +98,8 @@ h1 {
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
+  align-content: start;
+  align-items: stretch;
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--line);
@@ -106,7 +108,7 @@ h1 {
 
 .row {
   display: grid;
-  flex: 1 1 0;
+  flex: 0 0 clamp(36px, 6vh, 44px);
   grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
@@ -302,6 +304,7 @@ h1 {
   }
 
   .row {
+    flex-basis: 34px;
     gap: 6px;
     padding-right: 10px;
     padding-left: 10px;
