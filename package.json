@@ -10,7 +10,7 @@
   "scripts": {
     "build": "vite build",
     "deploy": "npm run build && devvit upload",
-    "dev": "devvit playtest spice_shop_watch_dev",
+    "dev": "devvit playtest",
     "launch": "npm run deploy && devvit publish",
     "login": "devvit login --copy-paste",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",

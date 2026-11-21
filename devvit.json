@@ -53,6 +53,6 @@
     "build": "vite build"
   },
   "dev": {
-    "subreddit": "spice_shop_watch_dev"
+    "subreddit": "karma_board_dev"
   }
 }
