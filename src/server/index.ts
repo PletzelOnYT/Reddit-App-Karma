@@ -36,7 +36,7 @@ type ScanStatus = {
   total: number;
 };
 
-type PostId = \`t3_\${string}\`;
+type PostId = `t3_${string}`;
 
 function asPostId(value: string): PostId {
   if (!value.startsWith('t3_')) throw new Error('Invalid Reddit post ID.');
@@ -49,7 +49,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function cleanUsername(value: unknown): string {
   if (typeof value !== 'string') return '';
-  const name = value.trim().replace(/^u\\//i, '');
+  const name = value.trim().replace(/^u\//i, '');
   if (!name || name === '[deleted]' || name === 'deleted' || name.toLowerCase() === 'automoderator') return '';
   return name;
 }
