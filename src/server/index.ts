@@ -291,10 +291,10 @@ app.post('/internal/menu/create-leaderboard', async (c) => {
     if (!post) {
       post = await reddit.submitCustomPost({
         subredditName,
-        title: '🏆 Community Karma Leaderboard',
+        title: '🏆 r/' + subredditName + ' Karma Leaderboard',
         entry: 'default',
         textFallback: {
-          text: 'Community Karma Leaderboard · Top 10 per page · Your rank stays at the bottom.',
+          text: 'Subreddit-specific karma leaderboard for r/' + subredditName + '. Scores use post karma and comment karma from this subreddit only.',
         },
       });
       await redis.set(LEADERBOARD_POST_KEY, post.id);
